@@ -4,7 +4,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { Buffer } from 'buffer';
 
-// Загружаем шрифт с поддержкой кириллицы
+// Загружаем шрифт
 const loadFont = async (pdfDoc) => {
   const fontPath = join(process.cwd(), 'pages', 'api', 'font', 'Moderustic.ttf');
   const fontBytes = readFileSync(fontPath);
@@ -17,65 +17,30 @@ const cleanText = (text) => {
   return text.replace(/[^\u0400-\u04FF\u0500-\u052F\u0020-\u007E\u00A0-\u00FF\u2000-\u206F\n\r]/g, '');
 };
 
-// Обрабатываем HTML-теги форматирования
-const processFormatting = (text) => {
-  const result = {
-    text: '',
-    formats: []
-  };
+// Автоперенос строк
+const wrapText = (text, maxWidth, fontSize, font) => {
+  const words = text.split(' ');
+  const lines = [];
+  let currentLine = words[0];
 
-  let currentPos = 0;
-  let openTags = [];
-
-  const tagRegex = /<(\/?)(b|i|u)>/g;
-  let match;
-
-  while ((match = tagRegex.exec(text)) !== null) {
-    // Текст до тега
-    const textBefore = text.slice(currentPos, match.index);
-    result.text += textBefore;
+  for (let i = 1; i < words.length; i++) {
+    const word = words[i];
+    const width = font.widthOfTextAtSize(currentLine + ' ' + word, fontSize);
     
-    // Добавляем форматирование
-    if (match[1] === '/') {
-      // Закрывающий тег
-      openTags = openTags.filter(tag => tag !== match[2]);
+    if (width < maxWidth) {
+      currentLine += ' ' + word;
     } else {
-      // Открывающий тег
-      openTags.push(match[2]);
+      lines.push(currentLine);
+      currentLine = word;
     }
-    
-    // Запоминаем позицию начала форматирования
-    if (openTags.length > 0) {
-      result.formats.push({
-        start: result.text.length,
-        end: -1, // будет установлено при закрытии тега
-        type: openTags[openTags.length - 1]
-      });
-    } else if (result.formats.length > 0) {
-      // Устанавливаем конец для последнего форматирования
-      const lastFormat = result.formats[result.formats.length - 1];
-      if (lastFormat.end === -1) {
-        lastFormat.end = result.text.length;
-      }
-    }
-    
-    currentPos = match.index + match[0].length;
   }
-
-  // Остаток текста после последнего тега
-  result.text += text.slice(currentPos);
-
-  // Закрываем все незакрытые форматирования
-  result.formats.forEach(format => {
-    if (format.end === -1) {
-      format.end = result.text.length;
-    }
-  });
-
-  return result;
+  
+  lines.push(currentLine);
+  return lines;
 };
 
 export default async function handler(req, res) {
+  // Настройка CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST');
 
@@ -84,104 +49,122 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { text, chat_id, bot_token, ...restParams } = req.body;
+    // Поддерживаемые параметры Telegram API для sendDocument
+    const {
+      // Обязательные параметры
+      text,
+      chat_id,
+      bot_token,
+      
+      // Опциональные параметры
+      business_connection_id,
+      message_thread_id,
+      thumbnail,
+      caption,
+      parse_mode,
+      caption_entities,
+      disable_content_type_detection,
+      disable_notification,
+      protect_content,
+      allow_paid_broadcast,
+      message_effect_id,
+      reply_parameters,
+      reply_markup,
+      
+      // Наш параметр для имени файла
+      document_title = 'document.pdf'
+    } = req.body;
 
     if (!text || !chat_id || !bot_token) {
-      return res.status(400).json({ error: 'Required parameters missing' });
+      return res.status(400).json({ error: 'Required parameters: text, chat_id, bot_token' });
     }
 
-    // Очищаем текст и обрабатываем форматирование
+    // Очищаем текст
     const cleanedText = cleanText(text);
-    const { text: finalText, formats } = processFormatting(cleanedText);
 
     // Создаем PDF
     const pdfDoc = await PDFDocument.create();
     pdfDoc.registerFontkit(fontkit);
     const font = await loadFont(pdfDoc);
     
-    // Создаем страницу
-    const lines = finalText.split('\n');
-    const lineHeight = 25;
-    const pageHeight = 50 + (lines.length * lineHeight);
-    const page = pdfDoc.addPage([600, pageHeight]);
+    // Настройки страницы
+    const pageWidth = 600;
+    const pageHeight = 800;
+    const margin = 50;
+    const fontSize = 12;
+    const lineHeight = 20;
+    const maxLineWidth = pageWidth - (margin * 2);
     
-    // Добавляем текст с форматированием
-    lines.forEach((line, lineIndex) => {
-      let currentFormats = formats.filter(f => 
-        f.start <= line.length && f.end >= 0
-      );
-
-      if (currentFormats.length === 0) {
-        // Простой текст без форматирования
+    // Создаем страницу
+    let page = pdfDoc.addPage([pageWidth, pageHeight]);
+    let yPosition = pageHeight - margin;
+    
+    // Разбиваем на абзацы
+    const paragraphs = cleanedText.split('\n');
+    
+    // Добавляем текст с автопереносами
+    for (const paragraph of paragraphs) {
+      const lines = wrapText(paragraph, maxLineWidth, fontSize, font);
+      
+      for (const line of lines) {
+        if (yPosition < margin) {
+          // Добавляем новую страницу если закончилось место
+          page = pdfDoc.addPage([pageWidth, pageHeight]);
+          yPosition = pageHeight - margin;
+        }
+        
         page.drawText(line, {
-          x: 50,
-          y: pageHeight - 50 - (lineIndex * lineHeight),
-          size: 12,
+          x: margin,
+          y: yPosition,
+          size: fontSize,
           font,
           color: rgb(0, 0, 0)
         });
-      } else {
-        // Текст с форматированием
-        let currentPos = 0;
-        currentFormats.forEach((format, i) => {
-          // Текст до форматирования
-          if (format.start > currentPos) {
-            page.drawText(line.slice(currentPos, format.start), {
-              x: 50 + getTextWidth(line.slice(currentPos, format.start), 12, font),
-              y: pageHeight - 50 - (lineIndex * lineHeight),
-              size: 12,
-              font,
-              color: rgb(0, 0, 0)
-            });
-          }
-
-          // Форматированный текст
-          const formattedText = line.slice(format.start, format.end);
-          page.drawText(formattedText, {
-            x: 50 + getTextWidth(line.slice(0, format.start), 12, font),
-            y: pageHeight - 50 - (lineIndex * lineHeight),
-            size: format.type === 'b' ? 14 : 12,
-            font,
-            color: rgb(0, 0, 0),
-            ...(format.type === 'i' && { skew: { x: 0.2, y: 0 } }),
-            ...(format.type === 'u' && { underline: true })
-          });
-
-          currentPos = format.end;
-        });
-
-        // Текст после последнего форматирования
-        if (currentPos < line.length) {
-          page.drawText(line.slice(currentPos), {
-            x: 50 + getTextWidth(line.slice(0, currentPos), 12, font),
-            y: pageHeight - 50 - (lineIndex * lineHeight),
-            size: 12,
-            font,
-            color: rgb(0, 0, 0)
-          });
-        }
+        
+        yPosition -= lineHeight;
       }
-    });
-
-    // Вспомогательная функция для расчета ширины текста
-    function getTextWidth(text, size, font) {
-      // Упрощенный расчет (можно заменить на точный)
-      return text.length * size * 0.6;
+      
+      // Дополнительный отступ между абзацами
+      yPosition -= lineHeight / 2;
     }
 
     const pdfBytes = await pdfDoc.save();
 
-    // Отправка в Telegram
+    // Формируем FormData для Telegram
     const formData = new FormData();
-    formData.append('chat_id', chat_id);
-    formData.append('document', new Blob([pdfBytes]), 'document.pdf');
     
-    Object.entries(restParams).forEach(([key, value]) => {
+    // Обязательные параметры
+    formData.append('chat_id', chat_id);
+    formData.append('document', new Blob([pdfBytes]), document_title);
+    
+    // Только поддерживаемые опциональные параметры
+    const supportedOptionalParams = {
+      business_connection_id,
+      message_thread_id,
+      thumbnail,
+      caption,
+      parse_mode,
+      caption_entities,
+      disable_content_type_detection,
+      disable_notification,
+      protect_content,
+      allow_paid_broadcast,
+      message_effect_id,
+      reply_parameters,
+      reply_markup
+    };
+
+    // Добавляем только указанные параметры
+    Object.entries(supportedOptionalParams).forEach(([key, value]) => {
       if (value !== undefined) {
-        formData.append(key, typeof value === 'object' ? JSON.stringify(value) : value.toString());
+        formData.append(
+          key, 
+          typeof value === 'object' ? JSON.stringify(value) : value.toString()
+        );
       }
     });
 
+    // Отправка в Telegram
     const response = await fetch(`https://api.telegram.org/bot${bot_token}/sendDocument`, {
       method: 'POST',
       body: formData
@@ -198,18 +181,22 @@ export default async function handler(req, res) {
       result: {
         message_id: result.result.message_id,
         document: {
-          file_name: 'document.pdf',
+          file_name: document_title,
           file_size: pdfBytes.length,
           mime_type: 'application/pdf'
-        }
+        },
+        date: result.result.date
       }
     });
 
   } catch (error) {
-    console.error('Error:', error);
+    console.error('PDF generation error:', error);
     return res.status(500).json({
       success: false,
-      error: error.message
+      error: error.message,
+      ...(process.env.NODE_ENV === 'development' && {
+        stack: error.stack
+      })
     });
   }
 }
