@@ -1,10 +1,5 @@
-import { PDFDocument, rgb } from 'pdf-lib';
-import fontkit from '@pdf-lib/fontkit';
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { Buffer } from 'buffer';
-
-// Для теста - базовый шрифт с поддержкой кириллицы (можно заменить на ваш .ttf)
-const russianFontBuffer = await fetch('https://github.com/Hopding/pdf-lib/files/5956750/NotoSans-Regular.ttf.zip')
-  .then(res => res.arrayBuffer());
 
 export default async function handler(req, res) {
   // Настройка CORS
@@ -53,12 +48,11 @@ export default async function handler(req, res) {
       });
     }
 
-    // Создаем PDF с поддержкой Unicode
+    // Создаем PDF
     const pdfDoc = await PDFDocument.create();
-    pdfDoc.registerFontkit(fontkit);
-
-    // Загружаем шрифт с поддержкой кириллицы
-    const customFont = await pdfDoc.embedFont(russianFontBuffer);
+    
+    // Используем стандартные шрифты (Helvetica поддерживает кириллицу)
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     
     // Подготовка текста
     const lines = text.split('\n');
@@ -71,14 +65,14 @@ export default async function handler(req, res) {
     // Создаем страницу
     const page = pdfDoc.addPage([600, pageHeight]);
 
-    // Добавляем русский текст
+    // Добавляем текст
     lines.forEach((line, index) => {
       if (line.trim()) {
         page.drawText(line, {
           x: left,
           y: pageHeight - top - (index * line_height),
           size: font_size,
-          font: customFont,
+          font,
           color: rgb(0, 0, 0),
           lineHeight: line_height,
         });
@@ -154,8 +148,7 @@ export default async function handler(req, res) {
       success: false,
       error: error.message,
       ...(process.env.NODE_ENV === 'development' && {
-        stack: error.stack,
-        requestBody: req.body
+        stack: error.stack
       })
     });
   }
