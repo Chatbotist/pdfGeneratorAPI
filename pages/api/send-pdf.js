@@ -3,6 +3,83 @@ import fontkit from '@pdf-lib/fontkit';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { Buffer } from 'buffer';
+import emojiRegex from 'emoji-regex';
+
+// Загружаем шрифты
+const loadFonts = async (pdfDoc) => {
+  const fontPath = join(process.cwd(), 'pages', 'api', 'font', 'Moderustic.ttf');
+  const fontBytes = readFileSync(fontPath);
+  
+  // Основной шрифт для текста
+  const mainFont = await pdfDoc.embedFont(fontBytes);
+  
+  // Шрифт для эмодзи (используем стандартный)
+  const emojiFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  
+  return { mainFont, emojiFont };
+};
+
+// Обработка HTML-тегов и эмодзи
+const processText = (text, pdfDoc, fonts) => {
+  const { mainFont, emojiFont } = fonts;
+  const emojiRegExp = emojiRegex();
+  
+  // Разбиваем текст на токены: текст и эмодзи
+  const tokens = [];
+  let lastIndex = 0;
+  let match;
+  
+  while ((match = emojiRegExp.exec(text)) !== null) {
+    // Текст до эмодзи
+    if (match.index > lastIndex) {
+      tokens.push({
+        type: 'text',
+        content: text.slice(lastIndex, match.index),
+        font: mainFont
+      });
+    }
+    
+    // Сам эмодзи
+    tokens.push({
+      type: 'emoji',
+      content: match[0],
+      font: emojiFont
+    });
+    
+    lastIndex = match.index + match[0].length;
+  }
+  
+  // Остаток текста после последнего эмодзи
+  if (lastIndex < text.length) {
+    tokens.push({
+      type: 'text',
+      content: text.slice(lastIndex),
+      font: mainFont
+    });
+  }
+  
+  // Обработка HTML-тегов
+  return tokens.map(token => {
+    if (token.type === 'text') {
+      // Простая замена тегов (можно расширить)
+      let content = token.content;
+      let isBold = false;
+      
+      // Обработка <b> тегов
+      if (content.includes('<b>')) {
+        isBold = true;
+        content = content.replace(/<b>/g, '').replace(/<\/b>/g, '');
+      }
+      
+      return {
+        ...token,
+        content,
+        bold: isBold
+      };
+    }
+    return token;
+  });
+};
 
 export default async function handler(req, res) {
   // Настройка CORS
@@ -14,35 +91,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Все параметры Telegram API
-    const {
-      // Обязательные
-      text,
-      chat_id,
-      bot_token,
-      
-      // Настройки документа
-      document_title = 'document.pdf',
-      font_size = 12,
-      line_height = 24,
-      margins = [50, 50, 50, 50], // left, top, right, bottom
-      
-      // Параметры Telegram
-      caption = '',
-      parse_mode = 'HTML',
-      disable_notification = false,
-      protect_content = false,
-      reply_parameters,
-      reply_markup,
-      message_thread_id,
-      thumbnail,
-      caption_entities,
-      disable_content_type_detection,
-      allow_sending_without_reply,
-      has_spoiler,
-      message_effect_id,
-      business_connection_id
-    } = req.body;
+    // Параметры из запроса
+    const { text, chat_id, bot_token, ...restParams } = req.body;
 
     // Валидация
     if (!text || !chat_id || !bot_token) {
@@ -51,81 +101,61 @@ export default async function handler(req, res) {
       });
     }
 
-    // Загружаем кастомный шрифт
-    const fontPath = join(process.cwd(), 'pages', 'api', 'font', 'Moderustic.ttf');
-    const fontBytes = readFileSync(fontPath);
-
-    // Создаем PDF и регистрируем fontkit
+    // Создаем PDF
     const pdfDoc = await PDFDocument.create();
-    pdfDoc.registerFontkit(fontkit); // Регистрируем fontkit
+    pdfDoc.registerFontkit(fontkit);
     
-    // Загружаем шрифт
-    const customFont = await pdfDoc.embedFont(fontBytes);
+    // Загружаем шрифты
+    const fonts = await loadFonts(pdfDoc);
     
-    // Подготовка текста
-    const lines = text.split('\n');
-    const [left, top, right, bottom] = margins;
-    const pageHeight = Math.max(
-      400, 
-      top + bottom + (lines.length * line_height)
-    );
-
+    // Обрабатываем текст
+    const tokens = processText(text, pdfDoc, fonts);
+    
     // Создаем страницу
-    const page = pdfDoc.addPage([600, pageHeight]);
-
-    // Добавляем текст
-    lines.forEach((line, index) => {
-      if (line.trim()) {
-        page.drawText(line, {
-          x: left,
-          y: pageHeight - top - (index * line_height),
-          size: font_size,
-          font: customFont,
+    const page = pdfDoc.addPage([600, 800]);
+    let yPosition = 750;
+    const lineHeight = 24;
+    
+    // Добавляем текст на страницу
+    tokens.forEach(token => {
+      if (token.type === 'text') {
+        page.drawText(token.content, {
+          x: 50,
+          y: yPosition,
+          size: token.bold ? 14 : 12,
+          font: token.font,
           color: rgb(0, 0, 0),
-          lineHeight: line_height,
+          ...(token.bold && { font: fonts.mainFont, size: 14 })
         });
+        
+        // Обновляем позицию (упрощенная логика переноса строк)
+        yPosition -= lineHeight;
+      } else if (token.type === 'emoji') {
+        page.drawText(token.content, {
+          x: 50,
+          y: yPosition,
+          size: 12,
+          font: token.font,
+          color: rgb(0, 0, 0)
+        });
+        yPosition -= lineHeight;
       }
     });
 
     const pdfBytes = await pdfDoc.save();
 
-    // Формируем FormData для Telegram
+    // Отправка в Telegram (остальной код без изменений)
     const formData = new FormData();
-    
-    // Обязательные параметры
     formData.append('chat_id', chat_id);
-    formData.append('document', new Blob([pdfBytes]), document_title);
+    formData.append('document', new Blob([pdfBytes]), 'document.pdf');
     
-    // Основные параметры
-    formData.append('caption', caption);
-    formData.append('parse_mode', parse_mode);
-    formData.append('disable_notification', disable_notification.toString());
-    formData.append('protect_content', protect_content.toString());
-
-    // Дополнительные параметры
-    const optionalParams = {
-      reply_parameters,
-      reply_markup,
-      message_thread_id,
-      thumbnail,
-      caption_entities,
-      disable_content_type_detection,
-      allow_sending_without_reply,
-      has_spoiler,
-      message_effect_id,
-      business_connection_id
-    };
-
-    Object.entries(optionalParams).forEach(([key, value]) => {
+    // Добавляем остальные параметры
+    Object.entries(restParams).forEach(([key, value]) => {
       if (value !== undefined) {
-        formData.append(
-          key, 
-          typeof value === 'object' ? JSON.stringify(value) : value.toString()
-        );
+        formData.append(key, typeof value === 'object' ? JSON.stringify(value) : value.toString());
       }
     });
 
-    // Отправка в Telegram
     const response = await fetch(`https://api.telegram.org/bot${bot_token}/sendDocument`, {
       method: 'POST',
       body: formData
@@ -142,11 +172,10 @@ export default async function handler(req, res) {
       result: {
         message_id: result.result.message_id,
         document: {
-          file_name: document_title,
+          file_name: 'document.pdf',
           file_size: pdfBytes.length,
           mime_type: 'application/pdf'
-        },
-        date: result.result.date
+        }
       }
     });
 
@@ -154,10 +183,7 @@ export default async function handler(req, res) {
     console.error('PDF generation error:', error);
     return res.status(500).json({
       success: false,
-      error: error.message,
-      ...(process.env.NODE_ENV === 'development' && {
-        stack: error.stack
-      })
+      error: error.message
     });
   }
 }
