@@ -4,44 +4,38 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { Buffer } from 'buffer';
 import emojiRegex from 'emoji-regex';
-import twemoji from 'twemoji';
 
-// Загружаем шрифт с поддержкой кириллицы
+// Загружаем шрифт
 const loadFont = async (pdfDoc) => {
   const fontPath = join(process.cwd(), 'pages', 'api', 'font', 'Moderustic.ttf');
   const fontBytes = readFileSync(fontPath);
   return await pdfDoc.embedFont(fontBytes);
 };
 
-// Заменяем эмодзи на текст (или удаляем)
+// Простая замена эмодзи на текстовые описания
 const replaceEmojis = (text) => {
+  const emojiMap = {
+    '😊': '[улыбка]',
+    '😂': '[смех]',
+    '❤️': '[сердце]',
+    '👍': '[палец вверх]',
+    // Добавьте другие нужные эмодзи
+  };
+  
   return text.replace(emojiRegex(), (emoji) => {
-    // Можно заменить на текстовое описание
-    return `[${twemoji.convert.toCodePoint(emoji)}]`;
-    // Или просто удалить: return '';
+    return emojiMap[emoji] || `[эмодзи:${emoji.codePointAt(0).toString(16)}]`;
   });
 };
 
 // Обработка форматирования
 const processFormatting = (text) => {
-  const styles = [];
-  let result = '';
-  
-  const replacements = [
-    { regex: /\*\*(.*?)\*\*/g, tag: 'b' },
-    { regex: /\*(.*?)\*/g, tag: 'b' },
-    { regex: /__(.*?)__/g, tag: 'i' },
-    { regex: /_(.*?)_/g, tag: 'i' },
-    { regex: /~~(.*?)~~/g, tag: 'u' },
-    { regex: /~(.*?)~/g, tag: 'u' }
-  ];
-
-  let processed = text;
-  for (const { regex, tag } of replacements) {
-    processed = processed.replace(regex, `<${tag}>$1</${tag}>`);
-  }
-
-  return processed;
+  return text
+    .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
+    .replace(/\*(.*?)\*/g, '<b>$1</b>')
+    .replace(/__(.*?)__/g, '<i>$1</i>')
+    .replace(/_(.*?)_/g, '<i>$1</i>')
+    .replace(/~~(.*?)~~/g, '<u>$1</u>')
+    .replace(/~(.*?)~/g, '<u>$1</u>');
 };
 
 export default async function handler(req, res) {
@@ -60,8 +54,8 @@ export default async function handler(req, res) {
     }
 
     // Обрабатываем текст
-    const cleanText = replaceEmojis(text);
-    const formattedText = processFormatting(cleanText);
+    const textWithoutEmojis = replaceEmojis(text);
+    const formattedText = processFormatting(textWithoutEmojis);
 
     // Создаем PDF
     const pdfDoc = await PDFDocument.create();
@@ -70,13 +64,14 @@ export default async function handler(req, res) {
     
     // Разбиваем на строки
     const lines = formattedText.split('\n');
-    const page = pdfDoc.addPage([600, 50 + (lines.length * 25)]);
+    const pageHeight = 50 + (lines.length * 25);
+    const page = pdfDoc.addPage([600, pageHeight]);
     
     // Добавляем текст
     lines.forEach((line, i) => {
       page.drawText(line, {
         x: 50,
-        y: page.getHeight() - 50 - (i * 25),
+        y: pageHeight - 50 - (i * 25),
         size: 12,
         font,
         color: rgb(0, 0, 0)
@@ -113,7 +108,8 @@ export default async function handler(req, res) {
         message_id: result.result.message_id,
         document: {
           file_name: 'document.pdf',
-          file_size: pdfBytes.length
+          file_size: pdfBytes.length,
+          mime_type: 'application/pdf'
         }
       }
     });
