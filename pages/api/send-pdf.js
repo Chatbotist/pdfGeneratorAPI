@@ -1,4 +1,6 @@
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import { PDFDocument, rgb } from 'pdf-lib';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { Buffer } from 'buffer';
 
 export default async function handler(req, res) {
@@ -48,11 +50,13 @@ export default async function handler(req, res) {
       });
     }
 
+    // Загружаем кастомный шрифт
+    const fontPath = join(process.cwd(), 'pages', 'api', 'font', 'Moderustic.ttf');
+    const fontBytes = readFileSync(fontPath);
+
     // Создаем PDF
     const pdfDoc = await PDFDocument.create();
-    
-    // Используем стандартные шрифты (Helvetica поддерживает кириллицу)
-    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const customFont = await pdfDoc.embedFont(fontBytes);
     
     // Подготовка текста
     const lines = text.split('\n');
@@ -72,7 +76,7 @@ export default async function handler(req, res) {
           x: left,
           y: pageHeight - top - (index * line_height),
           size: font_size,
-          font,
+          font: customFont,
           color: rgb(0, 0, 0),
           lineHeight: line_height,
         });
