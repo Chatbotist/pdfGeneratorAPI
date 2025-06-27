@@ -1,4 +1,5 @@
 import { PDFDocument, rgb } from 'pdf-lib';
+import fontkit from '@pdf-lib/fontkit';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { Buffer } from 'buffer';
@@ -54,8 +55,11 @@ export default async function handler(req, res) {
     const fontPath = join(process.cwd(), 'pages', 'api', 'font', 'Moderustic.ttf');
     const fontBytes = readFileSync(fontPath);
 
-    // Создаем PDF
+    // Создаем PDF и регистрируем fontkit
     const pdfDoc = await PDFDocument.create();
+    pdfDoc.registerFontkit(fontkit); // Регистрируем fontkit
+    
+    // Загружаем шрифт
     const customFont = await pdfDoc.embedFont(fontBytes);
     
     // Подготовка текста
