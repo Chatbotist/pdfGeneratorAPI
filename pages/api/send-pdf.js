@@ -1,109 +1,50 @@
-import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import { PDFDocument, rgb } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { Buffer } from 'buffer';
 import emojiRegex from 'emoji-regex';
+import twemoji from 'twemoji';
 
-// Загружаем шрифты
-const loadFonts = async (pdfDoc) => {
+// Загружаем шрифт с поддержкой кириллицы
+const loadFont = async (pdfDoc) => {
   const fontPath = join(process.cwd(), 'pages', 'api', 'font', 'Moderustic.ttf');
   const fontBytes = readFileSync(fontPath);
-  
-  const mainFont = await pdfDoc.embedFont(fontBytes);
-  const emojiFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  
-  return { mainFont, emojiFont };
+  return await pdfDoc.embedFont(fontBytes);
 };
 
-// Функция для разделения текста и эмодзи
-const splitTextAndEmojis = (text) => {
-  const emojiRegExp = emojiRegex();
-  const result = [];
-  let lastIndex = 0;
-  let match;
-
-  while ((match = emojiRegExp.exec(text)) !== null) {
-    // Текст до эмодзи
-    if (match.index > lastIndex) {
-      result.push({
-        type: 'text',
-        content: text.slice(lastIndex, match.index)
-      });
-    }
-    
-    // Эмодзи
-    result.push({
-      type: 'emoji',
-      content: match[0]
-    });
-    
-    lastIndex = match.index + match[0].length;
-  }
-
-  // Остаток текста
-  if (lastIndex < text.length) {
-    result.push({
-      type: 'text',
-      content: text.slice(lastIndex)
-    });
-  }
-
-  return result;
+// Заменяем эмодзи на текст (или удаляем)
+const replaceEmojis = (text) => {
+  return text.replace(emojiRegex(), (emoji) => {
+    // Можно заменить на текстовое описание
+    return `[${twemoji.convert.toCodePoint(emoji)}]`;
+    // Или просто удалить: return '';
+  });
 };
 
-// Функция для обработки форматирования
+// Обработка форматирования
 const processFormatting = (text) => {
-  // Обрабатываем Markdown-подобный синтаксис
-  let processedText = text
-    .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')  // **жирный**
-    .replace(/\*(.*?)\*/g, '<b>$1</b>')      // *жирный*
-    .replace(/__(.*?)__/g, '<i>$1</i>')      // __курсив__
-    .replace(/_(.*?)_/g, '<i>$1</i>')        // _курсив_
-    .replace(/~~(.*?)~~/g, '<u>$1</u>')      // ~~подчеркнутый~~
-    .replace(/~(.*?)~/g, '<u>$1</u>');       // ~подчеркнутый~
+  const styles = [];
+  let result = '';
+  
+  const replacements = [
+    { regex: /\*\*(.*?)\*\*/g, tag: 'b' },
+    { regex: /\*(.*?)\*/g, tag: 'b' },
+    { regex: /__(.*?)__/g, tag: 'i' },
+    { regex: /_(.*?)_/g, tag: 'i' },
+    { regex: /~~(.*?)~~/g, tag: 'u' },
+    { regex: /~(.*?)~/g, tag: 'u' }
+  ];
 
-  // Разбиваем на токены с учетом HTML-тегов
-  const tokens = [];
-  const tagRegex = /(<\/?(b|i|u)>)/g;
-  let lastIndex = 0;
-  let match;
-  let currentTags = [];
-
-  while ((match = tagRegex.exec(processedText)) !== null) {
-    // Текст до тега
-    if (match.index > lastIndex) {
-      tokens.push({
-        type: 'text',
-        content: processedText.slice(lastIndex, match.index),
-        tags: [...currentTags]
-      });
-    }
-
-    // Обработка тега
-    if (match[0].startsWith('</')) {
-      currentTags = currentTags.filter(tag => tag !== match[2]);
-    } else {
-      currentTags.push(match[2]);
-    }
-
-    lastIndex = match.index + match[0].length;
+  let processed = text;
+  for (const { regex, tag } of replacements) {
+    processed = processed.replace(regex, `<${tag}>$1</${tag}>`);
   }
 
-  // Остаток текста
-  if (lastIndex < processedText.length) {
-    tokens.push({
-      type: 'text',
-      content: processedText.slice(lastIndex),
-      tags: [...currentTags]
-    });
-  }
-
-  return tokens;
+  return processed;
 };
 
 export default async function handler(req, res) {
-  // Настройка CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST');
 
@@ -115,68 +56,32 @@ export default async function handler(req, res) {
     const { text, chat_id, bot_token, ...restParams } = req.body;
 
     if (!text || !chat_id || !bot_token) {
-      return res.status(400).json({ 
-        error: 'Required parameters: text, chat_id, bot_token' 
-      });
+      return res.status(400).json({ error: 'Required parameters missing' });
     }
+
+    // Обрабатываем текст
+    const cleanText = replaceEmojis(text);
+    const formattedText = processFormatting(cleanText);
 
     // Создаем PDF
     const pdfDoc = await PDFDocument.create();
     pdfDoc.registerFontkit(fontkit);
+    const font = await loadFont(pdfDoc);
     
-    // Загружаем шрифты
-    const { mainFont, emojiFont } = await loadFonts(pdfDoc);
+    // Разбиваем на строки
+    const lines = formattedText.split('\n');
+    const page = pdfDoc.addPage([600, 50 + (lines.length * 25)]);
     
-    // Обрабатываем текст
-    const formattedTokens = processFormatting(text);
-    let allTokens = [];
-
-    // Разбиваем каждый форматированный токен на текст/эмодзи
-    for (const token of formattedTokens) {
-      if (token.type === 'text') {
-        const splitResult = splitTextAndEmojis(token.content);
-        allTokens.push(...splitResult.map(t => ({
-          ...t,
-          tags: token.tags
-        })));
-      } else {
-        allTokens.push(token);
-      }
-    }
-    
-    // Создаем страницу
-    const page = pdfDoc.addPage([600, 800]);
-    let yPosition = 750;
-    const lineHeight = 24;
-    
-    // Добавляем текст на страницу
-    for (const token of allTokens) {
-      let font = mainFont;
-      let size = 12;
-      let color = rgb(0, 0, 0);
-      let content = token.content;
-      let skew = undefined;
-
-      if (token.type === 'emoji') {
-        font = emojiFont;
-      } else {
-        // Применяем форматирование
-        if (token.tags.includes('b')) size = 14;
-        if (token.tags.includes('i')) skew = { x: 0.2, y: 0 };
-        if (token.tags.includes('u')) color = rgb(0, 0, 1);
-      }
-
-      page.drawText(content, {
+    // Добавляем текст
+    lines.forEach((line, i) => {
+      page.drawText(line, {
         x: 50,
-        y: yPosition,
-        size,
+        y: page.getHeight() - 50 - (i * 25),
+        size: 12,
         font,
-        color,
-        ...(skew && { skew })
+        color: rgb(0, 0, 0)
       });
-
-      yPosition -= lineHeight;
-    }
+    });
 
     const pdfBytes = await pdfDoc.save();
 
@@ -208,14 +113,13 @@ export default async function handler(req, res) {
         message_id: result.result.message_id,
         document: {
           file_name: 'document.pdf',
-          file_size: pdfBytes.length,
-          mime_type: 'application/pdf'
+          file_size: pdfBytes.length
         }
       }
     });
 
   } catch (error) {
-    console.error('PDF generation error:', error);
+    console.error('Error:', error);
     return res.status(500).json({
       success: false,
       error: error.message
