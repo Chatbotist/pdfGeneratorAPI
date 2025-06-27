@@ -16,112 +16,90 @@ const loadFonts = async (pdfDoc) => {
   return { mainFont, emojiFont };
 };
 
-// Обработка форматирования
-const processText = (text) => {
-  // Обработка Markdown-подобного синтаксиса
-  text = text
-    .replace(/\*([^*]+)\*/g, '<b>$1</b>')       // *жирный* → <b>жирный</b>
-    .replace(/_([^_]+)_/g, '<i>$1</i>')         // _курсив_ → <i>курсив</i>
-    .replace(/~([^~]+)~/g, '<u>$1</u>');        // ~подчеркнутый~ → <u>подчеркнутый</u>
-
-  const tokens = [];
-  let buffer = '';
-  let currentStyles = {
-    bold: false,
-    italic: false,
-    underline: false
-  };
-
-  const pushText = (content) => {
-    if (content) {
-      tokens.push({
-        content,
-        ...currentStyles
-      });
-    }
-  };
-
-  for (let i = 0; i < text.length; i++) {
-    if (text.substr(i, 3) === '<b>') {
-      pushText(buffer);
-      buffer = '';
-      currentStyles.bold = true;
-      i += 2;
-    } else if (text.substr(i, 4) === '</b>') {
-      pushText(buffer);
-      buffer = '';
-      currentStyles.bold = false;
-      i += 3;
-    } else if (text.substr(i, 3) === '<i>') {
-      pushText(buffer);
-      buffer = '';
-      currentStyles.italic = true;
-      i += 2;
-    } else if (text.substr(i, 4) === '</i>') {
-      pushText(buffer);
-      buffer = '';
-      currentStyles.italic = false;
-      i += 3;
-    } else if (text.substr(i, 3) === '<u>') {
-      pushText(buffer);
-      buffer = '';
-      currentStyles.underline = true;
-      i += 2;
-    } else if (text.substr(i, 4) === '</u>') {
-      pushText(buffer);
-      buffer = '';
-      currentStyles.underline = false;
-      i += 3;
-    } else {
-      buffer += text[i];
-    }
-  }
-  pushText(buffer);
-
-  return tokens;
-};
-
-// Обработка эмодзи
-const processEmojis = (tokens) => {
+// Функция для разделения текста и эмодзи
+const splitTextAndEmojis = (text) => {
   const emojiRegExp = emojiRegex();
   const result = [];
+  let lastIndex = 0;
+  let match;
 
-  tokens.forEach(token => {
-    let text = token.content;
-    let lastIndex = 0;
-    let match;
-
-    while ((match = emojiRegExp.exec(text)) !== null) {
-      // Текст до эмодзи
-      if (match.index > lastIndex) {
-        result.push({
-          type: 'text',
-          content: text.slice(lastIndex, match.index),
-          ...token
-        });
-      }
-      
-      // Эмодзи
-      result.push({
-        type: 'emoji',
-        content: match[0],
-        ...token
-      });
-      
-      lastIndex = match.index + match[0].length;
-    }
-
-    // Остаток текста
-    if (lastIndex < text.length) {
+  while ((match = emojiRegExp.exec(text)) !== null) {
+    // Текст до эмодзи
+    if (match.index > lastIndex) {
       result.push({
         type: 'text',
-        content: text.slice(lastIndex),
-        ...token
+        content: text.slice(lastIndex, match.index)
       });
     }
-  });
+    
+    // Эмодзи
+    result.push({
+      type: 'emoji',
+      content: match[0]
+    });
+    
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Остаток текста
+  if (lastIndex < text.length) {
+    result.push({
+      type: 'text',
+      content: text.slice(lastIndex)
+    });
+  }
 
   return result;
+};
+
+// Функция для обработки форматирования
+const processFormatting = (text) => {
+  // Обрабатываем Markdown-подобный синтаксис
+  let processedText = text
+    .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')  // **жирный**
+    .replace(/\*(.*?)\*/g, '<b>$1</b>')      // *жирный*
+    .replace(/__(.*?)__/g, '<i>$1</i>')      // __курсив__
+    .replace(/_(.*?)_/g, '<i>$1</i>')        // _курсив_
+    .replace(/~~(.*?)~~/g, '<u>$1</u>')      // ~~подчеркнутый~~
+    .replace(/~(.*?)~/g, '<u>$1</u>');       // ~подчеркнутый~
+
+  // Разбиваем на токены с учетом HTML-тегов
+  const tokens = [];
+  const tagRegex = /(<\/?(b|i|u)>)/g;
+  let lastIndex = 0;
+  let match;
+  let currentTags = [];
+
+  while ((match = tagRegex.exec(processedText)) !== null) {
+    // Текст до тега
+    if (match.index > lastIndex) {
+      tokens.push({
+        type: 'text',
+        content: processedText.slice(lastIndex, match.index),
+        tags: [...currentTags]
+      });
+    }
+
+    // Обработка тега
+    if (match[0].startsWith('</')) {
+      currentTags = currentTags.filter(tag => tag !== match[2]);
+    } else {
+      currentTags.push(match[2]);
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Остаток текста
+  if (lastIndex < processedText.length) {
+    tokens.push({
+      type: 'text',
+      content: processedText.slice(lastIndex),
+      tags: [...currentTags]
+    });
+  }
+
+  return tokens;
 };
 
 export default async function handler(req, res) {
@@ -150,8 +128,21 @@ export default async function handler(req, res) {
     const { mainFont, emojiFont } = await loadFonts(pdfDoc);
     
     // Обрабатываем текст
-    const styleTokens = processText(text);
-    const tokens = processEmojis(styleTokens);
+    const formattedTokens = processFormatting(text);
+    let allTokens = [];
+
+    // Разбиваем каждый форматированный токен на текст/эмодзи
+    for (const token of formattedTokens) {
+      if (token.type === 'text') {
+        const splitResult = splitTextAndEmojis(token.content);
+        allTokens.push(...splitResult.map(t => ({
+          ...t,
+          tags: token.tags
+        })));
+      } else {
+        allTokens.push(token);
+      }
+    }
     
     // Создаем страницу
     const page = pdfDoc.addPage([600, 800]);
@@ -159,17 +150,20 @@ export default async function handler(req, res) {
     const lineHeight = 24;
     
     // Добавляем текст на страницу
-    tokens.forEach(token => {
+    for (const token of allTokens) {
       let font = mainFont;
       let size = 12;
       let color = rgb(0, 0, 0);
       let content = token.content;
+      let skew = undefined;
 
       if (token.type === 'emoji') {
         font = emojiFont;
       } else {
-        if (token.bold) size = 14;
-        if (token.underline) color = rgb(0, 0, 1); // Синий для подчеркивания
+        // Применяем форматирование
+        if (token.tags.includes('b')) size = 14;
+        if (token.tags.includes('i')) skew = { x: 0.2, y: 0 };
+        if (token.tags.includes('u')) color = rgb(0, 0, 1);
       }
 
       page.drawText(content, {
@@ -178,11 +172,11 @@ export default async function handler(req, res) {
         size,
         font,
         color,
-        ...(token.italic && { skew: { x: 0.2, y: 0 } }) // Наклон для курсива
+        ...(skew && { skew })
       });
 
       yPosition -= lineHeight;
-    });
+    }
 
     const pdfBytes = await pdfDoc.save();
 
