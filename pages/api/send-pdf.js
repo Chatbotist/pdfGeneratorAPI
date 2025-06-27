@@ -13,7 +13,6 @@ const loadFont = async (pdfDoc) => {
 
 // Удаляем все неподдерживаемые символы
 const cleanText = (text) => {
-  // Разрешаем: русские/английские буквы, цифры, пунктуацию, пробелы и переносы строк
   return text.replace(/[^\u0400-\u04FF\u0500-\u052F\u0020-\u007E\u00A0-\u00FF\u2000-\u206F\n\r]/g, '');
 };
 
@@ -49,14 +48,11 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Поддерживаемые параметры Telegram API для sendDocument
+    // Поддерживаемые параметры Telegram API
     const {
-      // Обязательные параметры
       text,
       chat_id,
       bot_token,
-      
-      // Опциональные параметры
       business_connection_id,
       message_thread_id,
       thumbnail,
@@ -70,8 +66,6 @@ export default async function handler(req, res) {
       message_effect_id,
       reply_parameters,
       reply_markup,
-      
-      // Наш параметр для имени файла
       document_title = 'document.pdf'
     } = req.body;
 
@@ -108,7 +102,6 @@ export default async function handler(req, res) {
       
       for (const line of lines) {
         if (yPosition < margin) {
-          // Добавляем новую страницу если закончилось место
           page = pdfDoc.addPage([pageWidth, pageHeight]);
           yPosition = pageHeight - margin;
         }
@@ -124,7 +117,6 @@ export default async function handler(req, res) {
         yPosition -= lineHeight;
       }
       
-      // Дополнительный отступ между абзацами
       yPosition -= lineHeight / 2;
     }
 
@@ -132,13 +124,11 @@ export default async function handler(req, res) {
 
     // Формируем FormData для Telegram
     const formData = new FormData();
-    
-    // Обязательные параметры
     formData.append('chat_id', chat_id);
     formData.append('document', new Blob([pdfBytes]), document_title);
     
-    // Только поддерживаемые опциональные параметры
-    const supportedOptionalParams = {
+    // Добавляем только указанные параметры
+    const optionalParams = {
       business_connection_id,
       message_thread_id,
       thumbnail,
@@ -154,8 +144,7 @@ export default async function handler(req, res) {
       reply_markup
     };
 
-    // Добавляем только указанные параметры
-    Object.entries(supportedOptionalParams).forEach(([key, value]) => {
+    Object.entries(optionalParams).forEach(([key, value]) => {
       if (value !== undefined) {
         formData.append(
           key, 
@@ -170,22 +159,19 @@ export default async function handler(req, res) {
       body: formData
     });
 
-    const result = await response.json();
+    const telegramResponse = await response.json();
 
-    if (!result.ok) {
-      throw new Error(result.description || 'Telegram API error');
+    if (!telegramResponse.ok) {
+      throw new Error(telegramResponse.description || 'Telegram API error');
     }
 
+    // Возвращаем полный ответ от Telegram
     return res.json({
       success: true,
-      result: {
-        message_id: result.result.message_id,
-        document: {
-          file_name: document_title,
-          file_size: pdfBytes.length,
-          mime_type: 'application/pdf'
-        },
-        date: result.result.date
+      telegram_response: telegramResponse, // Полный объект ответа
+      local_info: {
+        document_size: pdfBytes.length,
+        pages: pdfDoc.getPages().length
       }
     });
 
